@@ -1,0 +1,21 @@
+/target
+
+# Environment files (keep .env.example)
+.env
+.env.local
+
+# Session files
+*.db
+*.db-shm
+*.db-wal
+session.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

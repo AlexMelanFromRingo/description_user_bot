@@ -1,0 +1,70 @@
+[package]
+name = "description_user_bot"
+version = "0.1.0"
+edition = "2024"
+authors = ["Description Bot Developer"]
+description = "Telegram userbot for dynamic profile description updates"
+license = "MIT"
+repository = "https://github.com/user/description_user_bot"
+keywords = ["telegram", "userbot", "profile", "description"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+# Telegram MTProto client
+grammers-client = { git = "https://github.com/Lonami/grammers" }
+grammers-session = { git = "https://github.com/Lonami/grammers" }
+grammers-tl-types = { git = "https://github.com/Lonami/grammers" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Environment variables
+dotenvy = "0.15"
+
+# User input (for authentication)
+dialoguer = "0.11"
+
+[[bin]]
+name = "description_bot"
+path = "src/main.rs"
+
+[[bin]]
+name = "validate_descriptions"
+path = "src/validator/main.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+# Allow some pedantic lints that are too strict
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
