@@ -63,17 +63,13 @@ async fn main() -> Result<()> {
 
     let bot_settings = BotSettings::from_env_with_defaults();
 
-    let desc_config = DescriptionConfig::load_from_file(&args.config)
+    let mut desc_config = DescriptionConfig::load_from_file(&args.config)
         .context("Failed to load descriptions configuration")?;
 
-    desc_config
-        .validate()
-        .context("Description configuration validation failed")?;
-
     info!(
-        "Loaded {} descriptions (premium: {})",
+        "Loaded {} descriptions (auto_detect_premium: {})",
         desc_config.len(),
-        desc_config.is_premium
+        desc_config.auto_detect_premium
     );
 
     // Connect to Telegram
@@ -85,6 +81,33 @@ async fn main() -> Result<()> {
     if !bot.is_authorized().await.context("Failed to check authorization")? {
         authenticate(&bot, &tg_config).await?;
     }
+
+    // Auto-detect premium status if enabled
+    if desc_config.auto_detect_premium {
+        match bot.is_premium().await {
+            Ok(is_premium) => {
+                desc_config.set_premium(is_premium);
+                info!(
+                    "Auto-detected premium status: {}",
+                    if is_premium { "Premium" } else { "Free" }
+                );
+            }
+            Err(e) => {
+                tracing::warn!("Failed to auto-detect premium status: {}. Using config value.", e);
+            }
+        }
+    }
+
+    // Validate after premium status is determined
+    desc_config
+        .validate()
+        .context("Description configuration validation failed")?;
+
+    info!(
+        "Configuration validated (premium: {}, max_length: {})",
+        desc_config.is_premium,
+        desc_config.max_bio_length()
+    );
 
     let bot = Arc::new(bot);
     let config = Arc::new(RwLock::new(desc_config));

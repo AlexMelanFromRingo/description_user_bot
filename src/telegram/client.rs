@@ -312,6 +312,40 @@ impl TelegramBot {
         &self.client
     }
 
+    /// Checks if the current user has Telegram Premium.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not authorized or API call fails.
+    pub async fn is_premium(&self) -> Result<bool, TelegramError> {
+        if !self.is_authorized().await? {
+            return Err(TelegramError::NotAuthorized);
+        }
+
+        debug!("Checking premium status...");
+
+        let request = tl::functions::users::GetUsers {
+            id: vec![tl::enums::InputUser::UserSelf],
+        };
+
+        match self.client.invoke(&request).await {
+            Ok(users) => {
+                if let Some(tl::enums::User::User(user)) = users.first() {
+                    let is_premium = user.premium;
+                    info!("Premium status: {}", is_premium);
+                    Ok(is_premium)
+                } else {
+                    warn!("Could not get user info, assuming non-premium");
+                    Ok(false)
+                }
+            }
+            Err(e) => {
+                warn!("Failed to check premium status: {}", e);
+                Err(e.into())
+            }
+        }
+    }
+
     /// Disconnects from Telegram.
     pub fn disconnect(&self) {
         info!("Disconnecting from Telegram...");

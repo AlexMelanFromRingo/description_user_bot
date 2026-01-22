@@ -611,6 +611,7 @@ mod tests {
         let config = DescriptionConfig {
             descriptions: vec![],
             is_premium: false,
+            auto_detect_premium: false,
         };
         assert!(validate_description_text("Hello World!", &config).is_ok());
         assert!(validate_description_text("Привет мир! 👋", &config).is_ok());
@@ -621,6 +622,7 @@ mod tests {
         let config = DescriptionConfig {
             descriptions: vec![],
             is_premium: false,
+            auto_detect_premium: false,
         };
         assert!(validate_description_text("", &config).is_err());
     }
@@ -630,6 +632,7 @@ mod tests {
         let config = DescriptionConfig {
             descriptions: vec![],
             is_premium: false,
+            auto_detect_premium: false,
         };
         let long_text = "a".repeat(71);
         assert!(validate_description_text(&long_text, &config).is_err());
@@ -640,6 +643,7 @@ mod tests {
         let config = DescriptionConfig {
             descriptions: vec![],
             is_premium: true,
+            auto_detect_premium: false,
         };
         let text = "a".repeat(100);
         assert!(validate_description_text(&text, &config).is_ok());
@@ -650,6 +654,7 @@ mod tests {
         let config = DescriptionConfig {
             descriptions: vec![],
             is_premium: false,
+            auto_detect_premium: false,
         };
         let text_with_zwsp = "Hello\u{200B}World";
         assert!(validate_description_text(text_with_zwsp, &config).is_err());

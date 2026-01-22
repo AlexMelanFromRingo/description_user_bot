@@ -91,8 +91,18 @@ pub struct DescriptionConfig {
     pub descriptions: Vec<Description>,
 
     /// Whether the user has Telegram Premium (affects max bio length).
+    /// When `auto_detect_premium` is true, this value is updated at runtime.
     #[serde(default)]
     pub is_premium: bool,
+
+    /// If true, automatically detect Premium status from Telegram.
+    /// Defaults to true for new configs.
+    #[serde(default = "default_auto_detect")]
+    pub auto_detect_premium: bool,
+}
+
+fn default_auto_detect() -> bool {
+    true
 }
 
 impl DescriptionConfig {
@@ -275,6 +285,22 @@ impl DescriptionConfig {
                 ),
             ],
             is_premium: false,
+            auto_detect_premium: true,
+        }
+    }
+
+    /// Updates the premium status (used after auto-detection).
+    pub fn set_premium(&mut self, is_premium: bool) {
+        self.is_premium = is_premium;
+    }
+
+    /// Returns the maximum bio length based on premium status.
+    #[must_use]
+    pub fn max_bio_length(&self) -> usize {
+        if self.is_premium {
+            MAX_BIO_LENGTH_PREMIUM
+        } else {
+            MAX_BIO_LENGTH_FREE
         }
     }
 }
@@ -301,6 +327,7 @@ mod tests {
         let config = DescriptionConfig {
             descriptions: vec![],
             is_premium: false,
+            auto_detect_premium: false,
         };
         assert!(matches!(config.validate(), Err(ValidationError::NoDescriptions)));
     }
@@ -314,6 +341,7 @@ mod tests {
                 60,
             )],
             is_premium: false,
+            auto_detect_premium: false,
         };
         assert!(matches!(config.validate(), Err(ValidationError::TooLong { .. })));
     }
@@ -327,6 +355,7 @@ mod tests {
                 60,
             )],
             is_premium: true,
+            auto_detect_premium: false,
         };
         assert!(config.validate().is_ok());
     }
@@ -339,6 +368,7 @@ mod tests {
                 Description::new("same".to_owned(), "Second".to_owned(), 60),
             ],
             is_premium: false,
+            auto_detect_premium: false,
         };
         assert!(matches!(config.validate(), Err(ValidationError::DuplicateId { .. })));
     }
@@ -352,6 +382,7 @@ mod tests {
                 0,
             )],
             is_premium: false,
+            auto_detect_premium: false,
         };
         assert!(matches!(config.validate(), Err(ValidationError::InvalidDuration { .. })));
     }
