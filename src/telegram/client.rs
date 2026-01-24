@@ -370,7 +370,7 @@ impl TelegramBot {
                 let mut state = self.state.write().await;
                 state.current_bio = Some(bio.to_owned());
                 state.is_skipped = false;
-                info!("Bio updated successfully");
+                debug!("Bio update API call succeeded");
                 Ok(())
             }
             Err(e) => {
@@ -432,7 +432,7 @@ impl TelegramBot {
             Ok(users) => {
                 if let Some(tl::enums::User::User(user)) = users.first() {
                     let is_premium = user.premium;
-                    info!("Premium status: {}", is_premium);
+                    debug!("Premium status API returned: {}", is_premium);
                     Ok(is_premium)
                 } else {
                     warn!("Could not get user info, assuming non-premium");
