@@ -1,6 +1,34 @@
 //! Scheduler state management.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+
+/// Persistent state that survives restarts.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PersistentState {
+    /// Current description index.
+    pub current_index: usize,
+    /// Whether rotation is paused.
+    pub is_paused: bool,
+}
+
+impl PersistentState {
+    /// Loads state from a JSON file, returns default if not found.
+    pub fn load(path: impl AsRef<Path>) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Saves state to a JSON file.
+    pub fn save(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+        let json = serde_json::to_string(self)?;
+        std::fs::write(path, json)
+    }
+}
 
 /// State of the description scheduler.
 #[derive(Debug)]
@@ -31,6 +59,25 @@ impl SchedulerState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Creates state from persistent state loaded from disk.
+    #[must_use]
+    pub fn from_persistent(persistent: &PersistentState) -> Self {
+        Self {
+            current_index: persistent.current_index,
+            is_paused: persistent.is_paused,
+            ..Self::default()
+        }
+    }
+
+    /// Converts to persistent state for saving.
+    #[must_use]
+    pub fn to_persistent(&self) -> PersistentState {
+        PersistentState {
+            current_index: self.current_index,
+            is_paused: self.is_paused,
+        }
     }
 
     /// Returns the time remaining for the current description.

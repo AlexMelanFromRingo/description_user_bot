@@ -6,5 +6,5 @@
 mod state;
 mod runner;
 
-pub use state::SchedulerState;
+pub use state::{PersistentState, SchedulerState};
 pub use runner::{DescriptionScheduler, SchedulerMessage};

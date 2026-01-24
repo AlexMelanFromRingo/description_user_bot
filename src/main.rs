@@ -18,7 +18,9 @@ use tracing_subscriber::EnvFilter;
 
 use description_user_bot::commands::CommandHandler;
 use description_user_bot::config::{BotSettings, DescriptionConfig, TelegramConfig};
-use description_user_bot::scheduler::{DescriptionScheduler, SchedulerMessage, SchedulerState};
+use description_user_bot::scheduler::{
+    DescriptionScheduler, PersistentState, SchedulerMessage, SchedulerState,
+};
 use description_user_bot::telegram::{QrAuthResult, TelegramBot, TelegramError};
 
 /// Telegram userbot for dynamic profile description updates.
@@ -123,7 +125,20 @@ async fn main() -> Result<()> {
 
     let bot = Arc::new(bot);
     let config = Arc::new(RwLock::new(desc_config));
-    let state = Arc::new(RwLock::new(SchedulerState::new()));
+
+    // Load persistent state or start fresh
+    let state_path = "state.json";
+    let persistent = PersistentState::load(state_path);
+    let scheduler_state = SchedulerState::from_persistent(&persistent);
+
+    if scheduler_state.current_index > 0 {
+        info!(
+            "Resuming from index {} (paused: {})",
+            scheduler_state.current_index, scheduler_state.is_paused
+        );
+    }
+
+    let state = Arc::new(RwLock::new(scheduler_state));
 
     // Create scheduler channel
     let (scheduler_tx, scheduler_rx) = mpsc::channel::<SchedulerMessage>(32);
@@ -141,6 +156,7 @@ async fn main() -> Result<()> {
         Arc::clone(&bot),
         Arc::clone(&config),
         Arc::clone(&state),
+        state_path.to_owned(),
     );
 
     info!("Starting description bot...");
@@ -246,18 +262,16 @@ async fn authenticate(bot: &TelegramBot, config: &TelegramConfig) -> Result<()> 
 /// Handles QR code authentication.
 async fn authenticate_qr(bot: &TelegramBot, config: &TelegramConfig) -> Result<()> {
     info!("QR code authentication");
-    println!("Scan the QR code with your Telegram app:");
-    println!("Settings → Devices → Link Desktop Device\n");
 
     let mut last_token: Option<Vec<u8>> = None;
 
     loop {
         match bot.export_login_token(config.api_id, &config.api_hash).await? {
             QrAuthResult::Token { token, expires } => {
-                // Only redraw if token changed
+                // Always clear and redraw when token changes
                 if last_token.as_ref() != Some(&token) {
                     clear_screen();
-                    println!("Scan this QR code with Telegram app:");
+                    println!("Scan QR code in Telegram:");
                     println!("Settings → Devices → Link Desktop Device\n");
                     display_qr_code(&token);
 
@@ -267,7 +281,7 @@ async fn authenticate_qr(bot: &TelegramBot, config: &TelegramConfig) -> Result<(
                         .unwrap_or_default()
                         .as_secs() as i32; // Safe until 2038
                     let remaining = expires - now;
-                    println!("\nExpires in {} seconds. Waiting...", remaining.max(0));
+                    println!("\nExpires in {remaining} seconds...");
 
                     last_token = Some(token);
                 }
@@ -312,10 +326,13 @@ fn display_qr_code(token: &[u8]) {
 
     match QrCode::new(url.as_bytes()) {
         Ok(code) => {
+            // Use Unicode block characters for compact display
             let string = code
                 .render::<char>()
-                .quiet_zone(true)
-                .module_dimensions(2, 1)
+                .quiet_zone(false)
+                .module_dimensions(1, 1)
+                .dark_color('█')
+                .light_color(' ')
                 .build();
             println!("{string}");
         }

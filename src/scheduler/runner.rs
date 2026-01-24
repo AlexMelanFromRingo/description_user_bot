@@ -31,6 +31,9 @@ pub struct DescriptionScheduler {
     /// Scheduler state.
     state: Arc<RwLock<SchedulerState>>,
 
+    /// Path to save persistent state.
+    state_path: String,
+
     /// Check interval for state changes.
     check_interval: Duration,
 }
@@ -42,11 +45,13 @@ impl DescriptionScheduler {
         bot: Arc<TelegramBot>,
         config: Arc<RwLock<DescriptionConfig>>,
         state: Arc<RwLock<SchedulerState>>,
+        state_path: String,
     ) -> Self {
         Self {
             bot,
             config,
             state,
+            state_path,
             check_interval: Duration::from_secs(1),
         }
     }
@@ -158,6 +163,12 @@ impl DescriptionScheduler {
             Ok(()) => {
                 let mut state = self.state.write().await;
                 state.mark_started(duration);
+
+                // Save persistent state
+                if let Err(e) = state.to_persistent().save(&self.state_path) {
+                    warn!("Failed to save state: {}", e);
+                }
+
                 info!("Bio updated successfully, next update in {:?}", duration);
             }
             Err(TelegramError::FloodWait(seconds)) => {
