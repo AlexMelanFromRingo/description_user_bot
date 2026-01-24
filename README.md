@@ -74,7 +74,17 @@ cargo run --bin description_bot -- --generate-config
 cargo run --release --bin description_bot
 ```
 
-При первом запуске потребуется авторизация через код из Telegram.
+При первом запуске потребуется авторизация.
+
+#### Авторизация по QR-коду
+
+Если SMS-коды не приходят, используйте QR-авторизацию:
+
+```bash
+cargo run --release --bin description_bot -- --qr
+```
+
+Отсканируйте QR-код в Telegram: **Настройки → Устройства → Подключить устройство**
 
 ## Команды бота
 

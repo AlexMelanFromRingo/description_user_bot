@@ -1,6 +1,6 @@
 [package]
 name = "description_user_bot"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Description Bot Developer"]
 description = "Telegram userbot for dynamic profile description updates"
@@ -41,6 +41,12 @@ dotenvy = "0.15"
 
 # User input (for authentication)
 dialoguer = "0.11"
+
+# QR code generation for terminal
+qrcode = "0.14"
+
+# Base64 encoding for QR token
+base64 = "0.22"
 
 [[bin]]
 name = "description_bot"

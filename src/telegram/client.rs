@@ -82,6 +82,32 @@ fn extract_flood_wait_seconds(err_msg: &str) -> Option<u32> {
     None
 }
 
+/// Result of QR code authentication attempt.
+#[derive(Debug, Clone)]
+pub enum QrAuthResult {
+    /// Got a token to display as QR code.
+    Token {
+        /// Raw token bytes (encode as base64 for URL).
+        token: Vec<u8>,
+        /// Unix timestamp when the token expires.
+        expires: i32,
+    },
+    /// Need to migrate to another DC.
+    MigrateTo {
+        /// Target datacenter ID.
+        dc_id: i32,
+    },
+    /// Authentication successful.
+    Success {
+        /// User ID of the authenticated user.
+        user_id: i64,
+        /// Username if available.
+        username: Option<String>,
+    },
+    /// 2FA password is required.
+    PasswordRequired,
+}
+
 /// State of the current profile description.
 #[derive(Debug, Clone)]
 #[derive(Default)]
@@ -239,6 +265,80 @@ impl TelegramBot {
             Err(SignInError::InvalidPassword(token)) => Err(TelegramError::InvalidPassword(token)),
             Err(e) => Err(TelegramError::SignInFailed(e.to_string())),
         }
+    }
+
+    /// Performs QR code authentication.
+    ///
+    /// Returns the login token bytes that should be displayed as a QR code.
+    /// The QR code URL format is: `tg://login?token=BASE64_TOKEN`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails.
+    pub async fn export_login_token(
+        &self,
+        api_id: i32,
+        api_hash: &str,
+    ) -> Result<QrAuthResult, TelegramError> {
+        debug!("Requesting QR login token...");
+
+        let request = tl::functions::auth::ExportLoginToken {
+            api_id,
+            api_hash: api_hash.to_owned(),
+            except_ids: vec![],
+        };
+
+        match self.client.invoke(&request).await {
+            Ok(tl::enums::auth::LoginToken::Token(token)) => {
+                debug!("Got login token, expires: {}", token.expires);
+                Ok(QrAuthResult::Token {
+                    token: token.token,
+                    expires: token.expires,
+                })
+            }
+            Ok(tl::enums::auth::LoginToken::MigrateTo(migrate)) => {
+                debug!("Need to migrate to DC {}", migrate.dc_id);
+                Ok(QrAuthResult::MigrateTo { dc_id: migrate.dc_id })
+            }
+            Ok(tl::enums::auth::LoginToken::Success(success)) => {
+                debug!("QR login successful!");
+                if let tl::enums::auth::Authorization::Authorization(auth) = success.authorization
+                    && let tl::enums::User::User(user) = auth.user {
+                        return Ok(QrAuthResult::Success {
+                            user_id: user.id,
+                            username: user.username,
+                        });
+                    }
+                Ok(QrAuthResult::Success {
+                    user_id: 0,
+                    username: None,
+                })
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("SESSION_PASSWORD_NEEDED") {
+                    return Ok(QrAuthResult::PasswordRequired);
+                }
+                Err(TelegramError::SignInFailed(err_str))
+            }
+        }
+    }
+
+    /// Accepts a login token (called when QR code is scanned).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the token is invalid or expired.
+    pub async fn accept_login_token(&self, token: Vec<u8>) -> Result<(), TelegramError> {
+        debug!("Accepting login token...");
+
+        let request = tl::functions::auth::AcceptLoginToken { token };
+
+        self.client
+            .invoke(&request)
+            .await
+            .map(|_| ())
+            .map_err(|e| TelegramError::SignInFailed(e.to_string()))
     }
 
     /// Updates the user's profile bio/about text.

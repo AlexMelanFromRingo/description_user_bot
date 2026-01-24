@@ -3,11 +3,15 @@
 //! A Telegram userbot that dynamically updates your profile description
 //! based on configured rotation schedules.
 
+use std::io::Write;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use clap::Parser;
 use dialoguer::{Input, Password};
+use qrcode::QrCode;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
@@ -15,7 +19,7 @@ use tracing_subscriber::EnvFilter;
 use description_user_bot::commands::CommandHandler;
 use description_user_bot::config::{BotSettings, DescriptionConfig, TelegramConfig};
 use description_user_bot::scheduler::{DescriptionScheduler, SchedulerMessage, SchedulerState};
-use description_user_bot::telegram::{TelegramBot, TelegramError};
+use description_user_bot::telegram::{QrAuthResult, TelegramBot, TelegramError};
 
 /// Telegram userbot for dynamic profile description updates.
 #[derive(Parser, Debug)]
@@ -38,6 +42,10 @@ struct Args {
     /// Generate an example configuration file and exit.
     #[arg(long)]
     generate_config: bool,
+
+    /// Use QR code for authentication instead of phone number.
+    #[arg(long)]
+    qr: bool,
 }
 
 #[tokio::main]
@@ -79,7 +87,11 @@ async fn main() -> Result<()> {
 
     // Handle authentication if needed
     if !bot.is_authorized().await.context("Failed to check authorization")? {
-        authenticate(&bot, &tg_config).await?;
+        if args.qr {
+            authenticate_qr(&bot, &tg_config).await?;
+        } else {
+            authenticate(&bot, &tg_config).await?;
+        }
     }
 
     // Auto-detect premium status if enabled
@@ -228,6 +240,89 @@ async fn authenticate(bot: &TelegramBot, config: &TelegramConfig) -> Result<()> 
             Ok(())
         }
         Err(e) => Err(e).context("Authentication failed"),
+    }
+}
+
+/// Handles QR code authentication.
+async fn authenticate_qr(bot: &TelegramBot, config: &TelegramConfig) -> Result<()> {
+    info!("QR code authentication");
+    println!("Scan the QR code with your Telegram app:");
+    println!("Settings → Devices → Link Desktop Device\n");
+
+    let mut last_token: Option<Vec<u8>> = None;
+
+    loop {
+        match bot.export_login_token(config.api_id, &config.api_hash).await? {
+            QrAuthResult::Token { token, expires } => {
+                // Only redraw if token changed
+                if last_token.as_ref() != Some(&token) {
+                    clear_screen();
+                    println!("Scan this QR code with Telegram app:");
+                    println!("Settings → Devices → Link Desktop Device\n");
+                    display_qr_code(&token);
+
+                    #[allow(clippy::cast_possible_truncation)]
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i32; // Safe until 2038
+                    let remaining = expires - now;
+                    println!("\nExpires in {} seconds. Waiting...", remaining.max(0));
+
+                    last_token = Some(token);
+                }
+
+                // Poll every 2 seconds
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            QrAuthResult::Success { user_id, username } => {
+                clear_screen();
+                let name = username.unwrap_or_else(|| format!("id:{user_id}"));
+                info!("Successfully authenticated as @{}", name);
+                println!("✓ Successfully authenticated as @{name}");
+                return Ok(());
+            }
+            QrAuthResult::PasswordRequired => {
+                // 2FA is enabled - user needs to confirm on their phone
+                // After scanning QR, Telegram will ask for 2FA password on the phone
+                println!("\n2FA is enabled. Please confirm login on your phone and enter 2FA password there.");
+                println!("Waiting for confirmation...\n");
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                // Continue polling - success will come after phone confirmation
+            }
+            QrAuthResult::MigrateTo { dc_id } => {
+                info!("Need to migrate to DC {}, retrying...", dc_id);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
+/// Clears the terminal screen.
+fn clear_screen() {
+    // ANSI escape codes: clear screen and move cursor to top-left
+    print!("\x1B[2J\x1B[1;1H");
+    let _ = std::io::stdout().flush();
+}
+
+/// Displays a QR code in the terminal.
+fn display_qr_code(token: &[u8]) {
+    let token_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token);
+    let url = format!("tg://login?token={token_b64}");
+
+    match QrCode::new(url.as_bytes()) {
+        Ok(code) => {
+            let string = code
+                .render::<char>()
+                .quiet_zone(true)
+                .module_dimensions(2, 1)
+                .build();
+            println!("{string}");
+        }
+        Err(e) => {
+            println!("Failed to generate QR code: {e}");
+            println!("Manual URL: {url}");
+        }
     }
 }
 
