@@ -1,0 +1,21 @@
+{
+  "descriptions": [
+    {
+      "id": "morning",
+      "text": "☀️ Good morning! Ready for a new day",
+      "duration_secs": 10
+    },
+    {
+      "id": "working",
+      "text": "💻 Currently working...",
+      "duration_secs": 10
+    },
+    {
+      "id": "evening",
+      "text": "🌙 Relaxing in the evening",
+      "duration_secs": 7200
+    }
+  ],
+  "is_premium": false,
+  "auto_detect_premium": true
+}

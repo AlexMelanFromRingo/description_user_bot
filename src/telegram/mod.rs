@@ -7,7 +7,8 @@ mod client;
 mod rate_limiter;
 
 pub use client::{
-    PwdToken as PasswordToken, QrAuthResult, TelegramBot, TelegramError, Token as LoginToken,
+    PwdToken as PasswordToken, QrAuthResult, RawUpdatesReceiver, TelegramBot, TelegramError,
+    Token as LoginToken,
 };
 pub use grammers_client::update::Update;
 pub use rate_limiter::RateLimiter;

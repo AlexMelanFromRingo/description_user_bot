@@ -3,14 +3,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use grammers_client::client::{LoginToken, PasswordToken};
+use grammers_client::client::{LoginToken, PasswordToken, UpdatesConfiguration};
 use grammers_client::{sender, Client, InvocationError, SenderPool, SignInError};
 use grammers_session::storages::SqliteSession;
+use grammers_session::updates::UpdatesLike;
 use grammers_tl_types as tl;
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+
+/// Type alias for the updates receiver from `SenderPool`.
+pub type RawUpdatesReceiver = mpsc::UnboundedReceiver<UpdatesLike>;
 
 use super::RateLimiter;
 use crate::config::TelegramConfig;
@@ -144,13 +148,15 @@ pub struct TelegramBot {
 impl TelegramBot {
     /// Connects to Telegram with the given configuration.
     ///
+    /// Returns the bot instance and the raw updates receiver for processing incoming messages.
+    ///
     /// # Errors
     ///
     /// Returns an error if connection fails.
     pub async fn connect(
         config: &TelegramConfig,
         rate_limit_secs: u64,
-    ) -> Result<Self, TelegramError> {
+    ) -> Result<(Self, RawUpdatesReceiver), TelegramError> {
         info!("Connecting to Telegram...");
 
         let session = Arc::new(
@@ -161,7 +167,7 @@ impl TelegramBot {
 
         let SenderPool {
             runner,
-            updates: _updates,
+            updates,
             handle,
         } = SenderPool::new(Arc::clone(&session), config.api_id);
 
@@ -179,13 +185,34 @@ impl TelegramBot {
 
         info!("Connected to Telegram. Authorized: {}", is_authorized);
 
-        Ok(Self {
+        let bot = Self {
             client,
             handle: handle.thin,
             rate_limiter: RateLimiter::from_secs(rate_limit_secs),
             state: RwLock::new(ProfileState::default()),
             _pool_task: pool_task,
-        })
+        };
+
+        Ok((bot, updates))
+    }
+
+    /// Converts the raw updates receiver into a high-level update stream.
+    ///
+    /// This method consumes the raw receiver and returns a stream that yields
+    /// parsed `Update` objects.
+    pub async fn stream_updates(
+        &self,
+        raw_updates: RawUpdatesReceiver,
+    ) -> grammers_client::client::UpdateStream {
+        self.client
+            .stream_updates(
+                raw_updates,
+                UpdatesConfiguration {
+                    catch_up: false,
+                    ..Default::default()
+                },
+            )
+            .await
     }
 
     /// Checks if the client is authorized.
@@ -446,11 +473,96 @@ impl TelegramBot {
         }
     }
 
+    /// Gets the current user's ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not authorized or API call fails.
+    pub async fn get_me(&self) -> Result<(i64, Option<String>), TelegramError> {
+        if !self.is_authorized().await? {
+            return Err(TelegramError::NotAuthorized);
+        }
+
+        let request = tl::functions::users::GetUsers {
+            id: vec![tl::enums::InputUser::UserSelf],
+        };
+
+        match self.client.invoke(&request).await {
+            Ok(users) => {
+                if let Some(tl::enums::User::User(user)) = users.first() {
+                    Ok((user.id, user.username.clone()))
+                } else {
+                    Err(TelegramError::Invocation("Could not get user info".to_owned()))
+                }
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Sends a message to Saved Messages (self).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message could not be sent.
+    pub async fn send_to_saved_messages(&self, text: &str) -> Result<(), TelegramError> {
+        if !self.is_authorized().await? {
+            return Err(TelegramError::NotAuthorized);
+        }
+
+        debug!("Sending message to Saved Messages");
+
+        // Get our own user info to construct the peer
+        let (user_id, _) = self.get_me().await?;
+
+        let request = tl::functions::messages::SendMessage {
+            no_webpage: true,
+            silent: true,
+            background: true,
+            clear_draft: false,
+            noforwards: false,
+            update_stickersets_order: false,
+            invert_media: false,
+            allow_paid_floodskip: false,
+            allow_paid_stars: None,
+            peer: tl::enums::InputPeer::User(tl::types::InputPeerUser {
+                user_id,
+                access_hash: 0, // Self doesn't need access hash
+            }),
+            reply_to: None,
+            message: text.to_owned(),
+            random_id: rand_i64(),
+            reply_markup: None,
+            entities: None,
+            schedule_date: None,
+            send_as: None,
+            quick_reply_shortcut: None,
+            effect: None,
+            schedule_repeat_period: None,
+            suggested_post: None,
+        };
+
+        self.client
+            .invoke(&request)
+            .await
+            .map(|_| ())
+            .map_err(|e| TelegramError::Invocation(e.to_string()))
+    }
+
     /// Disconnects from Telegram.
     pub fn disconnect(&self) {
         info!("Disconnecting from Telegram...");
         self.handle.quit();
     }
+}
+
+/// Generates a random i64 for message IDs.
+fn rand_i64() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    (nanos & 0x7FFF_FFFF_FFFF_FFFF) as i64
 }
 
 impl std::fmt::Debug for TelegramBot {

@@ -21,7 +21,7 @@ use description_user_bot::config::{BotSettings, DescriptionConfig, TelegramConfi
 use description_user_bot::scheduler::{
     DescriptionScheduler, PersistentState, SchedulerMessage, SchedulerState,
 };
-use description_user_bot::telegram::{QrAuthResult, TelegramBot, TelegramError};
+use description_user_bot::telegram::{QrAuthResult, RawUpdatesReceiver, TelegramBot, TelegramError, Update};
 
 /// Telegram userbot for dynamic profile description updates.
 #[derive(Parser, Debug)]
@@ -51,6 +51,7 @@ struct Args {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -83,7 +84,7 @@ async fn main() -> Result<()> {
     );
 
     // Connect to Telegram
-    let bot = TelegramBot::connect(&tg_config, bot_settings.min_update_interval_secs)
+    let (bot, updates) = TelegramBot::connect(&tg_config, bot_settings.min_update_interval_secs)
         .await
         .context("Failed to connect to Telegram")?;
 
@@ -95,6 +96,9 @@ async fn main() -> Result<()> {
             authenticate(&bot, &tg_config).await?;
         }
     }
+
+    // Get user ID for command filtering
+    let (my_user_id, _) = bot.get_me().await.context("Failed to get user info")?;
 
     // Auto-detect premium status if enabled
     if desc_config.auto_detect_premium {
@@ -143,8 +147,8 @@ async fn main() -> Result<()> {
     // Create scheduler channel
     let (scheduler_tx, scheduler_rx) = mpsc::channel::<SchedulerMessage>(32);
 
-    // Create command handler (not fully used yet - requires updates stream integration)
-    let _command_handler = Arc::new(CommandHandler::new(
+    // Create command handler
+    let command_handler = Arc::new(CommandHandler::new(
         bot_settings.command_prefix.clone(),
         Arc::clone(&state),
         Arc::clone(&config),
@@ -167,10 +171,21 @@ async fn main() -> Result<()> {
         scheduler.run(scheduler_rx).await;
     });
 
-    // For now, since we can't easily get updates handle after connect,
-    // we'll run without update handling and just let the scheduler work
-    info!("Bot is running. Use Ctrl+C to stop.");
-    info!("Note: Command handling requires updates stream which is not yet fully integrated.");
+    // Spawn updates handler task
+    let bot_for_updates = Arc::clone(&bot);
+    let scheduler_tx_for_updates = scheduler_tx.clone();
+    let updates_handle = tokio::spawn(async move {
+        Box::pin(handle_updates(
+            updates,
+            bot_for_updates,
+            command_handler,
+            scheduler_tx_for_updates,
+            my_user_id,
+        ))
+        .await;
+    });
+
+    info!("Bot is running. Send commands to Saved Messages.");
 
     // Wait for Ctrl+C
     tokio::select! {
@@ -183,9 +198,73 @@ async fn main() -> Result<()> {
     info!("Shutting down...");
     let _ = scheduler_tx.send(SchedulerMessage::Shutdown).await;
     let _ = scheduler_handle.await;
+    updates_handle.abort();
     bot.disconnect();
 
     Ok(())
+}
+
+/// Handles incoming Telegram updates and processes commands.
+async fn handle_updates(
+    raw_updates: RawUpdatesReceiver,
+    bot: Arc<TelegramBot>,
+    command_handler: Arc<CommandHandler>,
+    scheduler_tx: mpsc::Sender<SchedulerMessage>,
+    my_user_id: i64,
+) {
+    use grammers_session::types::{PeerId, PeerKind};
+
+    let my_peer_id = PeerId::user(my_user_id);
+
+    // Convert raw updates to high-level update stream
+    let mut updates = bot.stream_updates(raw_updates).await;
+
+    loop {
+        match updates.next().await {
+            Ok(update) => {
+                if let Update::NewMessage(message) = update {
+                    // Only process outgoing messages to Saved Messages (self chat)
+                    let peer_id = message.peer_id();
+
+                    // Check if the message is in our own chat (Saved Messages)
+                    // Either it matches our user ID or it's the special self_user
+                    let is_saved_messages = peer_id == my_peer_id
+                        || peer_id == PeerId::self_user()
+                        || (peer_id.kind() == PeerKind::User && peer_id.kind() == PeerKind::UserSelf);
+
+                    if !is_saved_messages {
+                        continue;
+                    }
+
+                    // Check if message is outgoing (we sent it)
+                    if !message.outgoing() {
+                        continue;
+                    }
+
+                    let text = message.text();
+                    debug!("Received message in Saved Messages: {}", text);
+
+                    // Try to handle as command
+                    if let Some(result) = command_handler.try_handle(text).await {
+                        // Send response
+                        if let Err(e) = bot.send_to_saved_messages(&result.message).await {
+                            tracing::error!("Failed to send command response: {}", e);
+                        }
+
+                        // Trigger update if needed
+                        if result.trigger_update {
+                            let _ = scheduler_tx.send(SchedulerMessage::TriggerUpdate).await;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Error receiving update: {}", e);
+                // Small delay before retrying
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
 }
 
 /// Initializes the logging subsystem.
