@@ -3,17 +3,17 @@
     {
       "id": "morning",
       "text": "☀️ Good morning! Ready for a new day",
-      "duration_secs": 10
+      "duration_secs": 3600
     },
     {
       "id": "working",
       "text": "💻 Currently working...",
-      "duration_secs": 10
+      "duration_secs": 7200
     },
     {
       "id": "evening",
       "text": "🌙 Relaxing in the evening",
-      "duration_secs": 7200
+      "duration_secs": 3600
     }
   ],
   "is_premium": false,

@@ -1,1 +1,6 @@
-{"current_index":1,"is_paused":false}
+{
+  "current_index": 0,
+  "is_paused": false,
+  "started_at_unix": 1769449586,
+  "duration_secs": 3600
+}

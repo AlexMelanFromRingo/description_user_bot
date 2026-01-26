@@ -52,9 +52,6 @@ pub struct SchedulerState {
     /// Whether rotation is paused.
     pub is_paused: bool,
 
-    /// Whether to trigger an immediate update (without advancing).
-    pub trigger_update: bool,
-
     /// Custom description to use instead of the configured one.
     pub custom_description: Option<String>,
 
@@ -146,7 +143,6 @@ impl SchedulerState {
             return;
         }
         self.current_index = (self.current_index + 1) % total_count;
-        self.trigger_update = false;
         self.custom_description = None;
     }
 
@@ -155,12 +151,18 @@ impl SchedulerState {
         self.current_started_at = Some(Instant::now());
         self.started_at_unix = Some(now_unix());
         self.current_duration = Some(duration);
-        self.trigger_update = false;
     }
 
     /// Clears the custom description.
     pub fn clear_custom(&mut self) {
         self.custom_description = None;
+    }
+
+    /// Clears timing info (for goto/skip operations).
+    pub fn clear_timing(&mut self) {
+        self.current_started_at = None;
+        self.started_at_unix = None;
+        self.current_duration = None;
     }
 
     /// Resets the scheduler state to initial values.
@@ -178,8 +180,8 @@ mod tests {
         let state = SchedulerState::default();
         assert_eq!(state.current_index, 0);
         assert!(!state.is_paused);
-        assert!(!state.trigger_update);
         assert!(state.custom_description.is_none());
+        assert!(!state.has_timing());
     }
 
     #[test]

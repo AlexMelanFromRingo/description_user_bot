@@ -79,14 +79,17 @@ impl CommandHandler {
     }
 
     async fn handle_skip(&self) -> CommandResult {
+        let config = self.config.read().await;
         let mut state = self.scheduler_state.write().await;
 
         if state.is_paused {
             return CommandResult::error("Cannot skip while paused. Use 'resume' first.");
         }
 
-        state.trigger_update = true;
-        CommandResult::success_with_update("✓ Skipping current description...")
+        // Advance to next and clear timing
+        state.advance(config.len());
+        state.clear_timing();
+        CommandResult::success_with_update("✓ Skipping to next description...")
     }
 
     async fn handle_status(&self) -> CommandResult {
@@ -221,7 +224,7 @@ impl CommandHandler {
                 drop(config); // Release read lock before acquiring write lock
                 let mut state = self.scheduler_state.write().await;
                 state.current_index = idx;
-                state.trigger_update = true; // Trigger immediate switch
+                state.clear_timing(); // Clear old timing so scheduler applies new description
 
                 let config = self.config.read().await;
                 let desc = &config.descriptions[idx];
@@ -314,7 +317,7 @@ impl CommandHandler {
 
         let mut state = self.scheduler_state.write().await;
         state.custom_description = Some(text.to_owned());
-        state.trigger_update = true;
+        state.clear_timing(); // Trigger immediate update
 
         CommandResult::success_with_update(format!(
             "✓ Setting custom description: \"{}\"",
