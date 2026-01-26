@@ -85,7 +85,7 @@ impl CommandHandler {
             return CommandResult::error("Cannot skip while paused. Use 'resume' first.");
         }
 
-        state.skip_current = true;
+        state.trigger_update = true;
         CommandResult::success_with_update("✓ Skipping current description...")
     }
 
@@ -221,7 +221,7 @@ impl CommandHandler {
                 drop(config); // Release read lock before acquiring write lock
                 let mut state = self.scheduler_state.write().await;
                 state.current_index = idx;
-                state.skip_current = true; // Trigger immediate switch
+                state.trigger_update = true; // Trigger immediate switch
 
                 let config = self.config.read().await;
                 let desc = &config.descriptions[idx];
@@ -314,7 +314,7 @@ impl CommandHandler {
 
         let mut state = self.scheduler_state.write().await;
         state.custom_description = Some(text.to_owned());
-        state.skip_current = true;
+        state.trigger_update = true;
 
         CommandResult::success_with_update(format!(
             "✓ Setting custom description: \"{}\"",

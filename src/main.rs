@@ -211,8 +211,8 @@ async fn poll_commands(
         }
 
     loop {
-        // Poll every 2 seconds
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Poll every second for faster response
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
         // Get recent messages
         match bot.get_saved_messages(10).await {

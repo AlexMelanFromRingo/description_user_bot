@@ -97,13 +97,13 @@ impl DescriptionScheduler {
     async fn check_and_update(&self) {
         let state = self.state.read().await;
 
-        // Don't update if paused
-        if state.is_paused {
+        // Don't update if paused (unless trigger_update is set)
+        if state.is_paused && !state.trigger_update {
             return;
         }
 
         // Check if we should update
-        let should_update = state.skip_current || state.is_expired();
+        let should_update = state.trigger_update || state.is_expired();
 
         if !should_update {
             return;
@@ -134,12 +134,14 @@ impl DescriptionScheduler {
             // Use custom description with a default duration
             (custom, Duration::from_secs(3600)) // 1 hour default for custom
         } else {
-            // Advance to next if skipping or expired
-            if (state.skip_current || state.is_expired())
-                && state.current_started_at.is_some() {
-                    // Only advance if not the first run
-                    state.advance(config.len());
-                }
+            // Advance to next ONLY if expired (not if trigger_update)
+            // trigger_update means "apply current index immediately"
+            if state.is_expired() && !state.trigger_update && state.has_timing() {
+                // Only advance if not the first run and not a triggered update
+                state.advance(config.len());
+            }
+            // Clear the trigger flag
+            state.trigger_update = false;
 
             let desc = if let Some(d) = config.get(state.current_index) { d } else {
                 state.current_index = 0;

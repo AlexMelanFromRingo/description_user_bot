@@ -1,7 +1,7 @@
 //! Scheduler state management.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +12,10 @@ pub struct PersistentState {
     pub current_index: usize,
     /// Whether rotation is paused.
     pub is_paused: bool,
+    /// Unix timestamp when current description started (seconds).
+    pub started_at_unix: Option<u64>,
+    /// Duration of current description in seconds.
+    pub duration_secs: Option<u64>,
 }
 
 impl PersistentState {
@@ -25,9 +29,17 @@ impl PersistentState {
 
     /// Saves state to a JSON file.
     pub fn save(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
-        let json = serde_json::to_string(self)?;
+        let json = serde_json::to_string_pretty(self)?;
         std::fs::write(path, json)
     }
+}
+
+/// Gets current Unix timestamp in seconds.
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// State of the description scheduler.
@@ -40,17 +52,20 @@ pub struct SchedulerState {
     /// Whether rotation is paused.
     pub is_paused: bool,
 
-    /// Whether to skip the current description immediately.
-    pub skip_current: bool,
+    /// Whether to trigger an immediate update (without advancing).
+    pub trigger_update: bool,
 
     /// Custom description to use instead of the configured one.
     pub custom_description: Option<String>,
 
-    /// When the current description was set.
-    pub current_started_at: Option<Instant>,
+    /// When the current description was set (Instant for precise timing).
+    current_started_at: Option<Instant>,
+
+    /// Unix timestamp when started (for persistence).
+    started_at_unix: Option<u64>,
 
     /// Duration of the current description.
-    pub current_duration: Option<Duration>,
+    current_duration: Option<Duration>,
 }
 
 
@@ -64,11 +79,25 @@ impl SchedulerState {
     /// Creates state from persistent state loaded from disk.
     #[must_use]
     pub fn from_persistent(persistent: &PersistentState) -> Self {
-        Self {
+        let mut state = Self {
             current_index: persistent.current_index,
             is_paused: persistent.is_paused,
+            started_at_unix: persistent.started_at_unix,
+            current_duration: persistent.duration_secs.map(Duration::from_secs),
             ..Self::default()
+        };
+
+        // Restore Instant from Unix timestamp if available
+        if let (Some(started_unix), Some(_duration)) = (persistent.started_at_unix, persistent.duration_secs) {
+            let now = now_unix();
+            if started_unix <= now {
+                let elapsed_secs = now - started_unix;
+                // Create an Instant that represents "elapsed_secs ago"
+                state.current_started_at = Instant::now().checked_sub(Duration::from_secs(elapsed_secs));
+            }
         }
+
+        state
     }
 
     /// Converts to persistent state for saving.
@@ -77,6 +106,8 @@ impl SchedulerState {
         PersistentState {
             current_index: self.current_index,
             is_paused: self.is_paused,
+            started_at_unix: self.started_at_unix,
+            duration_secs: self.current_duration.map(|d| d.as_secs()),
         }
     }
 
@@ -103,21 +134,28 @@ impl SchedulerState {
         }
     }
 
+    /// Checks if timing info is available (not the first run).
+    #[must_use]
+    pub fn has_timing(&self) -> bool {
+        self.current_duration.is_some()
+    }
+
     /// Advances to the next description index (wrapping around).
     pub fn advance(&mut self, total_count: usize) {
         if total_count == 0 {
             return;
         }
         self.current_index = (self.current_index + 1) % total_count;
-        self.skip_current = false;
+        self.trigger_update = false;
         self.custom_description = None;
     }
 
     /// Marks the start of a new description with the given duration.
     pub fn mark_started(&mut self, duration: Duration) {
         self.current_started_at = Some(Instant::now());
+        self.started_at_unix = Some(now_unix());
         self.current_duration = Some(duration);
-        self.skip_current = false;
+        self.trigger_update = false;
     }
 
     /// Clears the custom description.
@@ -140,7 +178,7 @@ mod tests {
         let state = SchedulerState::default();
         assert_eq!(state.current_index, 0);
         assert!(!state.is_paused);
-        assert!(!state.skip_current);
+        assert!(!state.trigger_update);
         assert!(state.custom_description.is_none());
     }
 
