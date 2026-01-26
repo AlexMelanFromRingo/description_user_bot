@@ -548,11 +548,68 @@ impl TelegramBot {
             .map_err(|e| TelegramError::Invocation(e.to_string()))
     }
 
+    /// Gets recent messages from Saved Messages.
+    ///
+    /// Returns a list of (`message_id`, text) tuples for recent text messages.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not authorized or API call fails.
+    pub async fn get_saved_messages(&self, limit: i32) -> Result<Vec<(i32, String)>, TelegramError> {
+        if !self.is_authorized().await? {
+            return Err(TelegramError::NotAuthorized);
+        }
+
+        let (user_id, _) = self.get_me().await?;
+
+        let request = tl::functions::messages::GetHistory {
+            peer: tl::enums::InputPeer::User(tl::types::InputPeerUser {
+                user_id,
+                access_hash: 0,
+            }),
+            offset_id: 0,
+            offset_date: 0,
+            add_offset: 0,
+            limit,
+            max_id: 0,
+            min_id: 0,
+            hash: 0,
+        };
+
+        match self.client.invoke(&request).await {
+            Ok(tl::enums::messages::Messages::Messages(msgs)) => {
+                Ok(extract_text_messages(&msgs.messages))
+            }
+            Ok(tl::enums::messages::Messages::Slice(msgs)) => {
+                Ok(extract_text_messages(&msgs.messages))
+            }
+            Ok(tl::enums::messages::Messages::ChannelMessages(msgs)) => {
+                Ok(extract_text_messages(&msgs.messages))
+            }
+            Ok(tl::enums::messages::Messages::NotModified(_)) => Ok(vec![]),
+            Err(e) => Err(TelegramError::Invocation(e.to_string())),
+        }
+    }
+
     /// Disconnects from Telegram.
     pub fn disconnect(&self) {
         info!("Disconnecting from Telegram...");
         self.handle.quit();
     }
+}
+
+/// Extracts text messages from a list of TL messages.
+fn extract_text_messages(messages: &[tl::enums::Message]) -> Vec<(i32, String)> {
+    messages
+        .iter()
+        .filter_map(|msg| {
+            if let tl::enums::Message::Message(m) = msg
+                && !m.message.is_empty() {
+                    return Some((m.id, m.message.clone()));
+                }
+            None
+        })
+        .collect()
 }
 
 /// Generates a random i64 for message IDs.

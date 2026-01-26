@@ -21,7 +21,7 @@ use description_user_bot::config::{BotSettings, DescriptionConfig, TelegramConfi
 use description_user_bot::scheduler::{
     DescriptionScheduler, PersistentState, SchedulerMessage, SchedulerState,
 };
-use description_user_bot::telegram::{QrAuthResult, RawUpdatesReceiver, TelegramBot, TelegramError, Update};
+use description_user_bot::telegram::{QrAuthResult, TelegramBot, TelegramError};
 
 /// Telegram userbot for dynamic profile description updates.
 #[derive(Parser, Debug)]
@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
     );
 
     // Connect to Telegram
-    let (bot, updates) = TelegramBot::connect(&tg_config, bot_settings.min_update_interval_secs)
+    let (bot, _updates) = TelegramBot::connect(&tg_config, bot_settings.min_update_interval_secs)
         .await
         .context("Failed to connect to Telegram")?;
 
@@ -96,9 +96,6 @@ async fn main() -> Result<()> {
             authenticate(&bot, &tg_config).await?;
         }
     }
-
-    // Get user ID for command filtering
-    let (my_user_id, _) = bot.get_me().await.context("Failed to get user info")?;
 
     // Auto-detect premium status if enabled
     if desc_config.auto_detect_premium {
@@ -171,18 +168,11 @@ async fn main() -> Result<()> {
         scheduler.run(scheduler_rx).await;
     });
 
-    // Spawn updates handler task
-    let bot_for_updates = Arc::clone(&bot);
-    let scheduler_tx_for_updates = scheduler_tx.clone();
-    let updates_handle = tokio::spawn(async move {
-        Box::pin(handle_updates(
-            updates,
-            bot_for_updates,
-            command_handler,
-            scheduler_tx_for_updates,
-            my_user_id,
-        ))
-        .await;
+    // Spawn command polling task
+    let bot_for_commands = Arc::clone(&bot);
+    let scheduler_tx_for_commands = scheduler_tx.clone();
+    let command_handle = tokio::spawn(async move {
+        poll_commands(bot_for_commands, command_handler, scheduler_tx_for_commands).await;
     });
 
     info!("Bot is running. Send commands to Saved Messages.");
@@ -198,54 +188,49 @@ async fn main() -> Result<()> {
     info!("Shutting down...");
     let _ = scheduler_tx.send(SchedulerMessage::Shutdown).await;
     let _ = scheduler_handle.await;
-    updates_handle.abort();
+    command_handle.abort();
     bot.disconnect();
 
     Ok(())
 }
 
-/// Handles incoming Telegram updates and processes commands.
-async fn handle_updates(
-    raw_updates: RawUpdatesReceiver,
+/// Polls Saved Messages for new commands.
+async fn poll_commands(
     bot: Arc<TelegramBot>,
     command_handler: Arc<CommandHandler>,
     scheduler_tx: mpsc::Sender<SchedulerMessage>,
-    my_user_id: i64,
 ) {
-    use grammers_session::types::{PeerId, PeerKind};
+    // Track the last processed message ID to avoid duplicates
+    let mut last_processed_id: i32 = 0;
 
-    let my_peer_id = PeerId::user(my_user_id);
-
-    // Convert raw updates to high-level update stream
-    let mut updates = bot.stream_updates(raw_updates).await;
+    // Get initial state - find the newest message ID to start from
+    if let Ok(messages) = bot.get_saved_messages(1).await
+        && let Some((id, _)) = messages.first() {
+            last_processed_id = *id;
+            debug!("Starting command polling from message ID: {}", last_processed_id);
+        }
 
     loop {
-        match updates.next().await {
-            Ok(update) => {
-                if let Update::NewMessage(message) = update {
-                    // Only process outgoing messages to Saved Messages (self chat)
-                    let peer_id = message.peer_id();
+        // Poll every 2 seconds
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
-                    // Check if the message is in our own chat (Saved Messages)
-                    // Either it matches our user ID or it's the special self_user
-                    let is_saved_messages = peer_id == my_peer_id
-                        || peer_id == PeerId::self_user()
-                        || (peer_id.kind() == PeerKind::User && peer_id.kind() == PeerKind::UserSelf);
-
-                    if !is_saved_messages {
+        // Get recent messages
+        match bot.get_saved_messages(10).await {
+            Ok(messages) => {
+                // Process new messages (newer than last_processed_id)
+                // Messages are returned newest first, so we need to reverse
+                for (msg_id, text) in messages.into_iter().rev() {
+                    if msg_id <= last_processed_id {
                         continue;
                     }
 
-                    // Check if message is outgoing (we sent it)
-                    if !message.outgoing() {
-                        continue;
-                    }
-
-                    let text = message.text();
-                    debug!("Received message in Saved Messages: {}", text);
+                    debug!("New message in Saved Messages (id={}): {}", msg_id, text);
+                    last_processed_id = msg_id;
 
                     // Try to handle as command
-                    if let Some(result) = command_handler.try_handle(text).await {
+                    if let Some(result) = command_handler.try_handle(&text).await {
+                        debug!("Command result: {}", result.message);
+
                         // Send response
                         if let Err(e) = bot.send_to_saved_messages(&result.message).await {
                             tracing::error!("Failed to send command response: {}", e);
@@ -259,9 +244,7 @@ async fn handle_updates(
                 }
             }
             Err(e) => {
-                tracing::error!("Error receiving update: {}", e);
-                // Small delay before retrying
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("Failed to poll Saved Messages: {}", e);
             }
         }
     }
@@ -391,11 +374,19 @@ async fn authenticate_qr(bot: &TelegramBot, config: &TelegramConfig) -> Result<(
     }
 }
 
-/// Clears the terminal screen.
+/// Clears the terminal screen using crossterm for WSL compatibility.
 fn clear_screen() {
-    // ANSI escape codes: clear screen and move cursor to top-left
-    print!("\x1B[2J\x1B[1;1H");
-    let _ = std::io::stdout().flush();
+    use crossterm::{execute, terminal::{Clear, ClearType}, cursor::MoveTo};
+
+    let mut stdout = std::io::stdout();
+    // Clear entire screen and scrollback buffer, move cursor to top-left
+    let _ = execute!(
+        stdout,
+        Clear(ClearType::Purge),  // Clear screen and scrollback
+        Clear(ClearType::All),    // Clear visible area
+        MoveTo(0, 0)              // Move cursor to top-left
+    );
+    let _ = stdout.flush();
 }
 
 /// Displays a QR code in the terminal.
@@ -405,11 +396,11 @@ fn display_qr_code(token: &[u8]) {
 
     match QrCode::new(url.as_bytes()) {
         Ok(code) => {
-            // Use Unicode block characters for compact display
+            // Use Unicode block characters - 2x1 for proper aspect ratio
             let string = code
                 .render::<char>()
-                .quiet_zone(false)
-                .module_dimensions(1, 1)
+                .quiet_zone(true)
+                .module_dimensions(2, 1)
                 .dark_color('█')
                 .light_color(' ')
                 .build();

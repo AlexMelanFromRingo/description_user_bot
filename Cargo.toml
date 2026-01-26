@@ -48,6 +48,9 @@ qrcode = "0.14"
 # Base64 encoding for QR token
 base64 = "0.22"
 
+# Cross-platform terminal manipulation
+crossterm = "0.28"
+
 [[bin]]
 name = "description_bot"
 path = "src/main.rs"
