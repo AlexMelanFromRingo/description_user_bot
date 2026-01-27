@@ -22,6 +22,9 @@ pub struct CommandHandler {
 
     /// Path to the descriptions file (for saving changes).
     config_path: String,
+
+    /// Path to the state file (for persisting state changes).
+    state_path: String,
 }
 
 impl CommandHandler {
@@ -32,12 +35,21 @@ impl CommandHandler {
         scheduler_state: Arc<RwLock<SchedulerState>>,
         config: Arc<RwLock<DescriptionConfig>>,
         config_path: String,
+        state_path: String,
     ) -> Self {
         Self {
             prefix,
             scheduler_state,
             config,
             config_path,
+            state_path,
+        }
+    }
+
+    /// Saves the current scheduler state to disk.
+    fn save_state(&self, state: &SchedulerState) {
+        if let Err(e) = state.to_persistent().save(&self.state_path) {
+            warn!("Failed to save state after command: {}", e);
         }
     }
 
@@ -89,6 +101,7 @@ impl CommandHandler {
         // Advance to next and clear timing
         state.advance(config.len());
         state.clear_timing();
+        self.save_state(&state);
         CommandResult::success_with_update("✓ Skipping to next description...")
     }
 
@@ -225,6 +238,7 @@ impl CommandHandler {
                 let mut state = self.scheduler_state.write().await;
                 state.current_index = idx;
                 state.clear_timing(); // Clear old timing so scheduler applies new description
+                self.save_state(&state);
 
                 let config = self.config.read().await;
                 let desc = &config.descriptions[idx];
@@ -248,6 +262,7 @@ impl CommandHandler {
         }
 
         state.is_paused = true;
+        self.save_state(&state);
         CommandResult::success("⏸ Description rotation paused.")
     }
 
@@ -259,6 +274,7 @@ impl CommandHandler {
         }
 
         state.is_paused = false;
+        self.save_state(&state);
         CommandResult::success("▶ Description rotation resumed.")
     }
 
@@ -278,7 +294,9 @@ impl CommandHandler {
                 let mut state = self.scheduler_state.write().await;
                 if state.current_index >= new_len {
                     state.current_index = 0;
+                    state.clear_timing();
                 }
+                self.save_state(&state);
 
                 CommandResult::success(format!(
                     "✓ Reloaded configuration. {old_len} → {new_len} descriptions."
@@ -318,6 +336,7 @@ impl CommandHandler {
         let mut state = self.scheduler_state.write().await;
         state.custom_description = Some(text.to_owned());
         state.clear_timing(); // Trigger immediate update
+        self.save_state(&state);
 
         CommandResult::success_with_update(format!(
             "✓ Setting custom description: \"{}\"",

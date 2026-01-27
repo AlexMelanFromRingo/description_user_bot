@@ -150,6 +150,7 @@ async fn main() -> Result<()> {
         Arc::clone(&state),
         Arc::clone(&config),
         args.config.clone(),
+        state_path.to_owned(),
     ));
 
     // Create scheduler

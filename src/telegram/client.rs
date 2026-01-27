@@ -141,6 +141,9 @@ pub struct TelegramBot {
     /// Current profile state.
     state: RwLock<ProfileState>,
 
+    /// Cached user ID (set after first `get_me` call).
+    cached_user_id: RwLock<Option<i64>>,
+
     /// Background task running the sender pool.
     _pool_task: JoinHandle<()>,
 }
@@ -190,6 +193,7 @@ impl TelegramBot {
             handle: handle.thin,
             rate_limiter: RateLimiter::from_secs(rate_limit_secs),
             state: RwLock::new(ProfileState::default()),
+            cached_user_id: RwLock::new(None),
             _pool_task: pool_task,
         };
 
@@ -473,6 +477,23 @@ impl TelegramBot {
         }
     }
 
+    /// Gets the cached user ID, fetching it from Telegram if not cached.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not authorized or API call fails.
+    async fn get_user_id(&self) -> Result<i64, TelegramError> {
+        // Check cache first
+        if let Some(id) = *self.cached_user_id.read().await {
+            return Ok(id);
+        }
+
+        // Fetch and cache
+        let (user_id, _) = self.get_me().await?;
+        *self.cached_user_id.write().await = Some(user_id);
+        Ok(user_id)
+    }
+
     /// Gets the current user's ID.
     ///
     /// # Errors
@@ -505,14 +526,9 @@ impl TelegramBot {
     ///
     /// Returns an error if the message could not be sent.
     pub async fn send_to_saved_messages(&self, text: &str) -> Result<(), TelegramError> {
-        if !self.is_authorized().await? {
-            return Err(TelegramError::NotAuthorized);
-        }
-
         debug!("Sending message to Saved Messages");
 
-        // Get our own user info to construct the peer
-        let (user_id, _) = self.get_me().await?;
+        let user_id = self.get_user_id().await?;
 
         let request = tl::functions::messages::SendMessage {
             no_webpage: true,
@@ -556,11 +572,7 @@ impl TelegramBot {
     ///
     /// Returns an error if not authorized or API call fails.
     pub async fn get_saved_messages(&self, limit: i32) -> Result<Vec<(i32, String)>, TelegramError> {
-        if !self.is_authorized().await? {
-            return Err(TelegramError::NotAuthorized);
-        }
-
-        let (user_id, _) = self.get_me().await?;
+        let user_id = self.get_user_id().await?;
 
         let request = tl::functions::messages::GetHistory {
             peer: tl::enums::InputPeer::User(tl::types::InputPeerUser {
