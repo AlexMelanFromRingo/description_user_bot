@@ -10,7 +10,9 @@ use super::{MAX_BIO_LENGTH_FREE, MAX_BIO_LENGTH_PREMIUM};
 /// Errors that can occur during description validation.
 #[derive(Debug, Error)]
 pub enum ValidationError {
-    #[error("Description at index {index} (id: {id}) exceeds maximum length: {length} > {max_length}")]
+    #[error(
+        "Description at index {index} (id: {id}) exceeds maximum length: {length} > {max_length}"
+    )]
     TooLong {
         index: usize,
         id: String,
@@ -24,7 +26,9 @@ pub enum ValidationError {
     #[error("Duplicate description ID found: {id}")]
     DuplicateId { id: String },
 
-    #[error("Description at index {index} (id: {id}) has invalid duration: {duration_secs} seconds (must be > 0)")]
+    #[error(
+        "Description at index {index} (id: {id}) has invalid duration: {duration_secs} seconds (must be > 0)"
+    )]
     InvalidDuration {
         index: usize,
         id: String,
@@ -85,7 +89,7 @@ impl Description {
 }
 
 /// Configuration containing all descriptions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DescriptionConfig {
     /// List of descriptions to rotate through.
     pub descriptions: Vec<Description>,
@@ -149,7 +153,9 @@ impl DescriptionConfig {
         for (index, desc) in self.descriptions.iter().enumerate() {
             // Check for duplicate IDs
             if !seen_ids.insert(&desc.id) {
-                return Err(ValidationError::DuplicateId { id: desc.id.clone() });
+                return Err(ValidationError::DuplicateId {
+                    id: desc.id.clone(),
+                });
             }
 
             // Check for empty text
@@ -204,7 +210,9 @@ impl DescriptionConfig {
         for (index, desc) in self.descriptions.iter().enumerate() {
             // Check for duplicate IDs
             if !seen_ids.insert(&desc.id) {
-                results.push(Err(ValidationError::DuplicateId { id: desc.id.clone() }));
+                results.push(Err(ValidationError::DuplicateId {
+                    id: desc.id.clone(),
+                }));
                 continue;
             }
 
@@ -326,36 +334,33 @@ mod tests {
     fn test_validation_empty_descriptions() {
         let config = DescriptionConfig {
             descriptions: vec![],
-            is_premium: false,
-            auto_detect_premium: false,
+            ..Default::default()
         };
-        assert!(matches!(config.validate(), Err(ValidationError::NoDescriptions)));
+        assert!(matches!(
+            config.validate(),
+            Err(ValidationError::NoDescriptions)
+        ));
     }
 
     #[test]
     fn test_validation_too_long() {
         let config = DescriptionConfig {
-            descriptions: vec![Description::new(
-                "test".to_owned(),
-                "a".repeat(71),
-                60,
-            )],
+            descriptions: vec![Description::new("test".to_owned(), "a".repeat(71), 60)],
             is_premium: false,
-            auto_detect_premium: false,
+            ..Default::default()
         };
-        assert!(matches!(config.validate(), Err(ValidationError::TooLong { .. })));
+        assert!(matches!(
+            config.validate(),
+            Err(ValidationError::TooLong { .. })
+        ));
     }
 
     #[test]
     fn test_validation_premium_allows_longer() {
         let config = DescriptionConfig {
-            descriptions: vec![Description::new(
-                "test".to_owned(),
-                "a".repeat(100),
-                60,
-            )],
+            descriptions: vec![Description::new("test".to_owned(), "a".repeat(100), 60)],
             is_premium: true,
-            auto_detect_premium: false,
+            ..Default::default()
         };
         assert!(config.validate().is_ok());
     }
@@ -367,23 +372,23 @@ mod tests {
                 Description::new("same".to_owned(), "First".to_owned(), 60),
                 Description::new("same".to_owned(), "Second".to_owned(), 60),
             ],
-            is_premium: false,
-            auto_detect_premium: false,
+            ..Default::default()
         };
-        assert!(matches!(config.validate(), Err(ValidationError::DuplicateId { .. })));
+        assert!(matches!(
+            config.validate(),
+            Err(ValidationError::DuplicateId { .. })
+        ));
     }
 
     #[test]
     fn test_validation_zero_duration() {
         let config = DescriptionConfig {
-            descriptions: vec![Description::new(
-                "test".to_owned(),
-                "Hello".to_owned(),
-                0,
-            )],
-            is_premium: false,
-            auto_detect_premium: false,
+            descriptions: vec![Description::new("test".to_owned(), "Hello".to_owned(), 0)],
+            ..Default::default()
         };
-        assert!(matches!(config.validate(), Err(ValidationError::InvalidDuration { .. })));
+        assert!(matches!(
+            config.validate(),
+            Err(ValidationError::InvalidDuration { .. })
+        ));
     }
 }

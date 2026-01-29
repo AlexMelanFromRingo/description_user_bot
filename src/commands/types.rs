@@ -99,29 +99,25 @@ impl BotCommand {
             "skip" | "next" => Some(Self::Skip),
             "status" | "stat" | "s" => Some(Self::Status),
             "list" | "ls" | "l" => Some(Self::List),
-            "view" | "show" => {
-                args.filter(|a| !a.is_empty())
-                    .map(|a| Self::View(a.to_owned()))
-            }
-            "goto" | "go" | "jump" => {
-                args.filter(|a| !a.is_empty())
-                    .map(|a| Self::Goto(a.to_owned()))
-            }
+            "view" | "show" => args
+                .filter(|a| !a.is_empty())
+                .map(|a| Self::View(a.to_owned())),
+            "goto" | "go" | "jump" => args
+                .filter(|a| !a.is_empty())
+                .map(|a| Self::Goto(a.to_owned())),
             "pause" | "stop" => Some(Self::Pause),
             "resume" | "start" | "continue" => Some(Self::Resume),
             "reload" | "refresh" => Some(Self::Reload),
             "help" | "h" | "?" => Some(Self::Help),
-            "set" => {
-                args.filter(|a| !a.is_empty())
-                    .map(|a| Self::Set(a.to_owned()))
-            }
+            "set" => args
+                .filter(|a| !a.is_empty())
+                .map(|a| Self::Set(a.to_owned())),
             "add" | "new" => Self::parse_add(args?),
             "edit" | "change" => Self::parse_edit(args?),
             "duration" | "time" => Self::parse_duration(args?),
-            "delete" | "remove" | "rm" | "del" => {
-                args.filter(|a| !a.is_empty())
-                    .map(|a| Self::Delete(a.to_owned()))
-            }
+            "delete" | "remove" | "rm" | "del" => args
+                .filter(|a| !a.is_empty())
+                .map(|a| Self::Delete(a.to_owned())),
             "info" | "about" | "version" => Some(Self::Info),
             _ => None,
         }

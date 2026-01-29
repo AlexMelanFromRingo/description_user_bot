@@ -98,9 +98,9 @@ impl CommandHandler {
             return CommandResult::error("Cannot skip while paused. Use 'resume' first.");
         }
 
-        // Advance to next and clear timing
+        // Advance to next and clear deadline to trigger immediate update
         state.advance(config.len());
-        state.clear_timing();
+        state.clear_deadline();
         self.save_state(&state);
         CommandResult::success_with_update("✓ Skipping to next description...")
     }
@@ -120,17 +120,15 @@ impl CommandHandler {
             "▶ Running"
         };
 
-        let time_info = if let Some(remaining) = state.time_remaining() {
-            format!("{}s remaining", remaining.as_secs())
-        } else {
-            "N/A".to_owned()
+        let time_info = match (state.time_remaining(), state.current_duration()) {
+            (Some(remaining), Some(total)) => {
+                format!("{}s / {}s", remaining.as_secs(), total.as_secs())
+            }
+            (Some(remaining), None) => format!("{}s remaining", remaining.as_secs()),
+            _ => "Pending update...".to_owned(),
         };
 
-        let account_type = if config.is_premium {
-            "Premium"
-        } else {
-            "Free"
-        };
+        let account_type = if config.is_premium { "Premium" } else { "Free" };
 
         let message = format!(
             "Status: {status}\n\
@@ -175,17 +173,13 @@ impl CommandHandler {
     async fn handle_view(&self, id: &str) -> CommandResult {
         let config = self.config.read().await;
 
-        let desc = config
-            .descriptions
-            .iter()
-            .find(|d| d.id == id)
-            .or_else(|| {
-                // Try as index
-                id.parse::<usize>()
-                    .ok()
-                    .filter(|&i| i > 0 && i <= config.len())
-                    .and_then(|i| config.get(i - 1))
-            });
+        let desc = config.descriptions.iter().find(|d| d.id == id).or_else(|| {
+            // Try as index
+            id.parse::<usize>()
+                .ok()
+                .filter(|&i| i > 0 && i <= config.len())
+                .and_then(|i| config.get(i - 1))
+        });
 
         match desc {
             Some(d) => {
@@ -236,8 +230,7 @@ impl CommandHandler {
             Some(idx) => {
                 drop(config); // Release read lock before acquiring write lock
                 let mut state = self.scheduler_state.write().await;
-                state.current_index = idx;
-                state.clear_timing(); // Clear old timing so scheduler applies new description
+                state.set_index(idx); // Sets index and clears deadline
                 self.save_state(&state);
 
                 let config = self.config.read().await;
@@ -293,8 +286,7 @@ impl CommandHandler {
                 // Reset index if out of bounds
                 let mut state = self.scheduler_state.write().await;
                 if state.current_index >= new_len {
-                    state.current_index = 0;
-                    state.clear_timing();
+                    state.set_index(0); // Reset and clear deadline
                 }
                 self.save_state(&state);
 
@@ -335,7 +327,7 @@ impl CommandHandler {
 
         let mut state = self.scheduler_state.write().await;
         state.custom_description = Some(text.to_owned());
-        state.clear_timing(); // Trigger immediate update
+        state.clear_deadline(); // Trigger immediate update
         self.save_state(&state);
 
         CommandResult::success_with_update(format!(
@@ -630,32 +622,20 @@ mod tests {
 
     #[test]
     fn test_validate_description_text_valid() {
-        let config = DescriptionConfig {
-            descriptions: vec![],
-            is_premium: false,
-            auto_detect_premium: false,
-        };
+        let config = DescriptionConfig::default();
         assert!(validate_description_text("Hello World!", &config).is_ok());
         assert!(validate_description_text("Привет мир! 👋", &config).is_ok());
     }
 
     #[test]
     fn test_validate_description_text_empty() {
-        let config = DescriptionConfig {
-            descriptions: vec![],
-            is_premium: false,
-            auto_detect_premium: false,
-        };
+        let config = DescriptionConfig::default();
         assert!(validate_description_text("", &config).is_err());
     }
 
     #[test]
     fn test_validate_description_text_too_long() {
-        let config = DescriptionConfig {
-            descriptions: vec![],
-            is_premium: false,
-            auto_detect_premium: false,
-        };
+        let config = DescriptionConfig::default();
         let long_text = "a".repeat(71);
         assert!(validate_description_text(&long_text, &config).is_err());
     }
@@ -663,9 +643,8 @@ mod tests {
     #[test]
     fn test_validate_description_text_premium_allows_longer() {
         let config = DescriptionConfig {
-            descriptions: vec![],
             is_premium: true,
-            auto_detect_premium: false,
+            ..Default::default()
         };
         let text = "a".repeat(100);
         assert!(validate_description_text(&text, &config).is_ok());
@@ -673,11 +652,7 @@ mod tests {
 
     #[test]
     fn test_validate_description_text_zero_width() {
-        let config = DescriptionConfig {
-            descriptions: vec![],
-            is_premium: false,
-            auto_detect_premium: false,
-        };
+        let config = DescriptionConfig::default();
         let text_with_zwsp = "Hello\u{200B}World";
         assert!(validate_description_text(text_with_zwsp, &config).is_err());
     }

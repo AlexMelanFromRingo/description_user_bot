@@ -8,7 +8,7 @@
 //! - Rotating profile descriptions on a schedule
 //! - Handling user commands via chat messages
 
-pub mod config;
 pub mod commands;
+pub mod config;
 pub mod scheduler;
 pub mod telegram;

@@ -4,12 +4,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use grammers_client::client::{LoginToken, PasswordToken, UpdatesConfiguration};
-use grammers_client::{sender, Client, InvocationError, SenderPool, SignInError};
+use grammers_client::{Client, InvocationError, SenderPool, SignInError, sender};
 use grammers_session::storages::SqliteSession;
 use grammers_session::updates::UpdatesLike;
 use grammers_tl_types as tl;
 use thiserror::Error;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -51,6 +51,9 @@ pub enum TelegramError {
 
     #[error("API invocation error: {0}")]
     Invocation(String),
+
+    #[error("Rate limited: {0} seconds remaining")]
+    RateLimited(u32),
 }
 
 impl From<InvocationError> for TelegramError {
@@ -59,9 +62,10 @@ impl From<InvocationError> for TelegramError {
 
         // Check for flood wait errors
         if (err_str.contains("FLOOD_WAIT") || err_str.contains("flood"))
-            && let Some(seconds) = extract_flood_wait_seconds(&err_str) {
-                return Self::FloodWait(seconds);
-            }
+            && let Some(seconds) = extract_flood_wait_seconds(&err_str)
+        {
+            return Self::FloodWait(seconds);
+        }
 
         Self::Invocation(err_str)
     }
@@ -113,8 +117,7 @@ pub enum QrAuthResult {
 }
 
 /// State of the current profile description.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ProfileState {
     /// Current bio text.
     pub current_bio: Option<String>,
@@ -125,7 +128,6 @@ pub struct ProfileState {
     /// Whether the current description was skipped.
     pub is_skipped: bool,
 }
-
 
 /// High-level Telegram client wrapper.
 pub struct TelegramBot {
@@ -263,10 +265,7 @@ impl TelegramBot {
                 Ok(())
             }
             Err(SignInError::PasswordRequired(password_token)) => {
-                debug!(
-                    "2FA password required, hint: {:?}",
-                    password_token.hint()
-                );
+                debug!("2FA password required, hint: {:?}", password_token.hint());
                 Err(TelegramError::PasswordRequired(password_token))
             }
             Err(SignInError::InvalidCode) => {
@@ -329,17 +328,20 @@ impl TelegramBot {
             }
             Ok(tl::enums::auth::LoginToken::MigrateTo(migrate)) => {
                 debug!("Need to migrate to DC {}", migrate.dc_id);
-                Ok(QrAuthResult::MigrateTo { dc_id: migrate.dc_id })
+                Ok(QrAuthResult::MigrateTo {
+                    dc_id: migrate.dc_id,
+                })
             }
             Ok(tl::enums::auth::LoginToken::Success(success)) => {
                 debug!("QR login successful!");
                 if let tl::enums::auth::Authorization::Authorization(auth) = success.authorization
-                    && let tl::enums::User::User(user) = auth.user {
-                        return Ok(QrAuthResult::Success {
-                            user_id: user.id,
-                            username: user.username,
-                        });
-                    }
+                    && let tl::enums::User::User(user) = auth.user
+                {
+                    return Ok(QrAuthResult::Success {
+                        user_id: user.id,
+                        username: user.username,
+                    });
+                }
                 Ok(QrAuthResult::Success {
                     user_id: 0,
                     username: None,
@@ -382,11 +384,16 @@ impl TelegramBot {
             return Err(TelegramError::NotAuthorized);
         }
 
-        debug!("Waiting for rate limiter...");
-        let waited = self.rate_limiter.wait_and_acquire().await;
-        if !waited.is_zero() {
-            debug!("Waited {:?} for rate limit", waited);
+        // Check rate limit without blocking - let caller decide when to retry
+        if !self.rate_limiter.is_allowed().await {
+            let remaining = self.rate_limiter.time_until_allowed().await;
+            let secs = u32::try_from(remaining.as_secs()).unwrap_or(u32::MAX);
+            debug!("Rate limited, {} seconds remaining", secs);
+            return Err(TelegramError::RateLimited(secs));
         }
+
+        // Mark as used before API call
+        self.rate_limiter.mark_used().await;
 
         info!("Updating bio to: \"{}\"", truncate_for_log(bio, 30));
 
@@ -513,7 +520,9 @@ impl TelegramBot {
                 if let Some(tl::enums::User::User(user)) = users.first() {
                     Ok((user.id, user.username.clone()))
                 } else {
-                    Err(TelegramError::Invocation("Could not get user info".to_owned()))
+                    Err(TelegramError::Invocation(
+                        "Could not get user info".to_owned(),
+                    ))
                 }
             }
             Err(e) => Err(e.into()),
@@ -571,7 +580,10 @@ impl TelegramBot {
     /// # Errors
     ///
     /// Returns an error if not authorized or API call fails.
-    pub async fn get_saved_messages(&self, limit: i32) -> Result<Vec<(i32, String)>, TelegramError> {
+    pub async fn get_saved_messages(
+        &self,
+        limit: i32,
+    ) -> Result<Vec<(i32, String)>, TelegramError> {
         let user_id = self.get_user_id().await?;
 
         let request = tl::functions::messages::GetHistory {
@@ -616,9 +628,10 @@ fn extract_text_messages(messages: &[tl::enums::Message]) -> Vec<(i32, String)> 
         .iter()
         .filter_map(|msg| {
             if let tl::enums::Message::Message(m) = msg
-                && !m.message.is_empty() {
-                    return Some((m.id, m.message.clone()));
-                }
+                && !m.message.is_empty()
+            {
+                return Some((m.id, m.message.clone()));
+            }
             None
         })
         .collect()
@@ -681,7 +694,10 @@ mod tests {
     #[test]
     fn test_extract_flood_wait() {
         assert_eq!(extract_flood_wait_seconds("FLOOD_WAIT_120"), Some(120));
-        assert_eq!(extract_flood_wait_seconds("flood wait 60 seconds"), Some(60));
+        assert_eq!(
+            extract_flood_wait_seconds("flood wait 60 seconds"),
+            Some(60)
+        );
         assert_eq!(extract_flood_wait_seconds("some other error"), None);
     }
 }

@@ -52,7 +52,10 @@ impl RateLimiter {
         };
 
         if !wait_duration.is_zero() {
-            debug!("Rate limiter: waiting {:?} before next operation", wait_duration);
+            debug!(
+                "Rate limiter: waiting {:?} before next operation",
+                wait_duration
+            );
             tokio::time::sleep(wait_duration).await;
         }
 
@@ -67,6 +70,12 @@ impl RateLimiter {
             Some(last_time) => last_time.elapsed() >= self.min_interval,
             None => true,
         }
+    }
+
+    /// Marks an operation as just performed (non-blocking).
+    pub async fn mark_used(&self) {
+        let mut last = self.last_operation.lock().await;
+        *last = Some(Instant::now());
     }
 
     /// Returns the time remaining until the next operation is allowed.

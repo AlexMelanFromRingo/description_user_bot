@@ -1,9 +1,23 @@
 //! Description scheduler runner.
+//!
+//! The scheduler follows a simple state machine:
+//! 1. Check if expired (deadline passed or no deadline)
+//! 2. If expired and not paused:
+//!    - If custom description is set → use it, then clear it
+//!    - Else if has deadline (regular expiration) → advance to next
+//!    - Else (no deadline, e.g. after goto/skip) → use current index
+//! 3. Apply the description via API
+//! 4. On success → set new deadline and save state
+//!
+//! Commands modify state and SAVE immediately:
+//! - goto/skip: set index + clear deadline + save
+//! - pause/resume: set flag + save
+//! - set: set custom description + clear deadline + save
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
@@ -64,9 +78,6 @@ impl DescriptionScheduler {
     }
 
     /// Runs the scheduler loop.
-    ///
-    /// This function runs until a shutdown message is received or the
-    /// receiver is closed.
     pub async fn run(&self, mut rx: mpsc::Receiver<SchedulerMessage>) {
         info!("Description scheduler started");
 
@@ -75,13 +86,13 @@ impl DescriptionScheduler {
         loop {
             tokio::select! {
                 _ = check_timer.tick() => {
-                    self.check_and_update().await;
+                    self.tick().await;
                 }
                 msg = rx.recv() => {
                     match msg {
                         Some(SchedulerMessage::TriggerUpdate) => {
                             debug!("Received trigger update message");
-                            self.force_update().await;
+                            self.tick().await;
                         }
                         Some(SchedulerMessage::Shutdown) | None => {
                             info!("Scheduler shutting down");
@@ -93,87 +104,103 @@ impl DescriptionScheduler {
         }
     }
 
-    /// Checks if an update is needed and performs it.
-    async fn check_and_update(&self) {
-        let state = self.state.read().await;
-
-        // Don't update if paused
-        if state.is_paused {
-            return;
+    /// Single tick of the scheduler.
+    async fn tick(&self) {
+        // Step 1: Quick check if we should even try
+        {
+            let state = self.state.read().await;
+            if state.is_paused || !state.is_expired() {
+                return;
+            }
         }
 
-        // Check if current description has expired
-        if !state.is_expired() {
-            return;
-        }
+        // Step 2: Determine what to update (READ ONLY - don't modify state yet)
+        let (text, duration_secs, description_id, should_advance, has_custom) = {
+            let state = self.state.read().await;
+            let config = self.config.read().await;
 
-        drop(state); // Release read lock
-        self.perform_update().await;
-    }
-
-    /// Forces an immediate update.
-    async fn force_update(&self) {
-        self.perform_update().await;
-    }
-
-    /// Performs the description update.
-    async fn perform_update(&self) {
-        let config = self.config.read().await;
-
-        if config.is_empty() {
-            warn!("No descriptions configured, skipping update");
-            return;
-        }
-
-        // Get the description text to use
-        let mut state = self.state.write().await;
-
-        let (text, duration) = if let Some(custom) = state.custom_description.take() {
-            // Use custom description with a default duration
-            (custom, Duration::from_secs(3600)) // 1 hour default for custom
-        } else {
-            // Advance to next ONLY if this is a regular expiration (has_timing = true)
-            // If timing was cleared (by goto/skip), don't advance - they already set the index
-            if state.is_expired() && state.has_timing() {
-                state.advance(config.len());
+            // Re-check under lock
+            if state.is_paused || !state.is_expired() {
+                return;
             }
 
-            let desc = if let Some(d) = config.get(state.current_index) { d } else {
-                state.current_index = 0;
-                if let Some(d) = config.get(0) { d } else {
-                    error!("Failed to get description at index 0");
-                    return;
-                }
-            };
+            if config.is_empty() {
+                warn!("No descriptions configured");
+                return;
+            }
 
-            (desc.text.clone(), Duration::from_secs(desc.duration_secs))
+            // Figure out what we'll update (without modifying state)
+            if let Some(ref custom) = state.custom_description {
+                // Custom description
+                (custom.clone(), 3600u64, "custom".to_owned(), false, true)
+            } else {
+                // Regular rotation
+                let should_advance = state.has_deadline();
+                let next_index = if should_advance {
+                    (state.current_index + 1) % config.len()
+                } else {
+                    state.current_index
+                };
+
+                let desc = config.get(next_index).or_else(|| config.get(0));
+                let Some(desc) = desc else {
+                    error!("No description available");
+                    return;
+                };
+
+                (
+                    desc.text.clone(),
+                    desc.duration_secs,
+                    desc.id.clone(),
+                    should_advance,
+                    false,
+                )
+            }
         };
 
-        let current_index = state.current_index;
-        drop(state); // Release write lock before API call
-        drop(config);
-
-        // Perform the API call
-        info!("Updating bio (index: {})", current_index);
+        // Step 3: Make API call (no locks held)
+        debug!(
+            "Updating bio to [{}]: \"{}\"",
+            description_id,
+            truncate(&text, 30)
+        );
 
         match self.bot.update_bio(&text).await {
             Ok(()) => {
+                // Step 4: On SUCCESS, modify state and save
                 let mut state = self.state.write().await;
-                state.mark_started(duration);
+                let config = self.config.read().await;
 
-                // Save persistent state
+                // Apply the changes we decided on
+                if has_custom {
+                    state.custom_description = None;
+                } else if should_advance {
+                    state.advance(config.len());
+                }
+
+                state.set_deadline(duration_secs);
+
+                // Save state to disk
                 if let Err(e) = state.to_persistent().save(&self.state_path) {
                     warn!("Failed to save state: {}", e);
                 }
 
-                info!("Bio updated successfully, next update in {:?}", duration);
+                info!(
+                    "Bio updated to [{}], next update in {} seconds",
+                    description_id, duration_secs
+                );
+            }
+            Err(TelegramError::RateLimited(seconds)) => {
+                debug!("Rate limited, {} seconds remaining", seconds);
+                // Don't modify state - scheduler will retry on next tick
             }
             Err(TelegramError::FloodWait(seconds)) => {
-                warn!("Flood wait: {} seconds, will retry later", seconds);
-                // The rate limiter in TelegramBot handles the wait
+                warn!("Flood wait from Telegram: {} seconds", seconds);
+                // Don't modify state - will retry later
             }
             Err(e) => {
                 error!("Failed to update bio: {}", e);
+                // Don't modify state - will retry on next tick
             }
         }
     }
@@ -188,6 +215,15 @@ impl DescriptionScheduler {
     #[must_use]
     pub fn config(&self) -> &Arc<RwLock<DescriptionConfig>> {
         &self.config
+    }
+}
+
+/// Truncates a string for display.
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.chars().count() <= max_len {
+        s.to_owned()
+    } else {
+        format!("{}...", s.chars().take(max_len).collect::<String>())
     }
 }
 

@@ -3,8 +3,8 @@
 //! Manages the automatic rotation of profile descriptions
 //! according to configured durations.
 
-mod state;
 mod runner;
+mod state;
 
-pub use state::{PersistentState, SchedulerState};
 pub use runner::{DescriptionScheduler, SchedulerMessage};
+pub use state::{PersistentState, SchedulerState};

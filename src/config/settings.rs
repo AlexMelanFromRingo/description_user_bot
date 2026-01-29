@@ -46,10 +46,11 @@ impl TelegramConfig {
             .parse()
             .map_err(|_| ConfigError::InvalidApiId)?;
 
-        let api_hash = std::env::var("TG_API_HASH")
-            .map_err(|_| ConfigError::MissingEnvVar("TG_API_HASH"))?;
+        let api_hash =
+            std::env::var("TG_API_HASH").map_err(|_| ConfigError::MissingEnvVar("TG_API_HASH"))?;
 
-        let session_path = std::env::var("TG_SESSION_PATH").map_or_else(|_| default_session_path(), PathBuf::from);
+        let session_path =
+            std::env::var("TG_SESSION_PATH").map_or_else(|_| default_session_path(), PathBuf::from);
 
         Ok(Self {
             api_id,
@@ -83,7 +84,7 @@ fn default_command_prefix() -> String {
 }
 
 fn default_min_update_interval() -> u64 {
-    60 // 1 minute minimum between updates
+    5 // 5 seconds minimum between updates (Telegram allows ~1 per 5s without flood)
 }
 
 fn default_log_level() -> String {
@@ -106,15 +107,15 @@ impl BotSettings {
     #[must_use]
     pub fn from_env_with_defaults() -> Self {
         Self {
-            descriptions_path: std::env::var("DESCRIPTIONS_PATH").map_or_else(|_| PathBuf::from("descriptions.json"), PathBuf::from),
+            descriptions_path: std::env::var("DESCRIPTIONS_PATH")
+                .map_or_else(|_| PathBuf::from("descriptions.json"), PathBuf::from),
             command_prefix: std::env::var("COMMAND_PREFIX")
                 .unwrap_or_else(|_| default_command_prefix()),
             min_update_interval_secs: std::env::var("MIN_UPDATE_INTERVAL")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or_else(default_min_update_interval),
-            log_level: std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| default_log_level()),
+            log_level: std::env::var("RUST_LOG").unwrap_or_else(|_| default_log_level()),
         }
     }
 }
@@ -137,7 +138,7 @@ mod tests {
     fn test_default_settings() {
         let settings = BotSettings::default();
         assert_eq!(settings.command_prefix, "/description_bot");
-        assert_eq!(settings.min_update_interval_secs, 60);
+        assert_eq!(settings.min_update_interval_secs, 5);
     }
 
     #[test]

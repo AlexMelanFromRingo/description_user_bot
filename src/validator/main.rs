@@ -53,7 +53,10 @@ fn generate_example(output_path: &str) -> ExitCode {
     match example.save_to_file(output_path) {
         Ok(()) => {
             println!("✓ Example configuration written to: {output_path}");
-            println!("\nThe file contains {} example descriptions.", example.len());
+            println!(
+                "\nThe file contains {} example descriptions.",
+                example.len()
+            );
             println!("Edit this file and set 'is_premium' to true if you have Telegram Premium.");
             ExitCode::SUCCESS
         }
@@ -66,7 +69,10 @@ fn generate_example(output_path: &str) -> ExitCode {
 
 fn validate_config(path: &str, premium: bool, verbose: bool) -> ExitCode {
     println!("Validating: {path}");
-    println!("Account type: {}\n", if premium { "Premium" } else { "Free" });
+    println!(
+        "Account type: {}\n",
+        if premium { "Premium" } else { "Free" }
+    );
 
     // Load the configuration
     let mut config = match DescriptionConfig::load_from_file(path) {
@@ -145,7 +151,10 @@ fn validate_config(path: &str, premium: bool, verbose: bool) -> ExitCode {
         println!("\nCharacter limits:");
         println!("  Free account:    {MAX_BIO_LENGTH_FREE} chars");
         println!("  Premium account: {MAX_BIO_LENGTH_PREMIUM} chars");
-        println!("  Your setting:    {max_length} chars ({})", if premium { "Premium" } else { "Free" });
+        println!(
+            "  Your setting:    {max_length} chars ({})",
+            if premium { "Premium" } else { "Free" }
+        );
 
         ExitCode::SUCCESS
     } else {

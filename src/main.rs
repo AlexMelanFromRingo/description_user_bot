@@ -12,7 +12,7 @@ use base64::Engine;
 use clap::Parser;
 use dialoguer::{Input, Password};
 use qrcode::QrCode;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
@@ -83,13 +83,17 @@ async fn main() -> Result<()> {
         desc_config.auto_detect_premium
     );
 
-    // Connect to Telegram
+    // Connect to Telegram (rate limit from MIN_UPDATE_INTERVAL env var, default 5s)
     let (bot, _updates) = TelegramBot::connect(&tg_config, bot_settings.min_update_interval_secs)
         .await
         .context("Failed to connect to Telegram")?;
 
     // Handle authentication if needed
-    if !bot.is_authorized().await.context("Failed to check authorization")? {
+    if !bot
+        .is_authorized()
+        .await
+        .context("Failed to check authorization")?
+    {
         if args.qr {
             authenticate_qr(&bot, &tg_config).await?;
         } else {
@@ -108,7 +112,10 @@ async fn main() -> Result<()> {
                 );
             }
             Err(e) => {
-                tracing::warn!("Failed to auto-detect premium status: {}. Using config value.", e);
+                tracing::warn!(
+                    "Failed to auto-detect premium status: {}. Using config value.",
+                    e
+                );
             }
         }
     }
@@ -206,10 +213,14 @@ async fn poll_commands(
 
     // Get initial state - find the newest message ID to start from
     if let Ok(messages) = bot.get_saved_messages(1).await
-        && let Some((id, _)) = messages.first() {
-            last_processed_id = *id;
-            debug!("Starting command polling from message ID: {}", last_processed_id);
-        }
+        && let Some((id, _)) = messages.first()
+    {
+        last_processed_id = *id;
+        debug!(
+            "Starting command polling from message ID: {}",
+            last_processed_id
+        );
+    }
 
     loop {
         // Poll every second for faster response
@@ -253,8 +264,7 @@ async fn poll_commands(
 
 /// Initializes the logging subsystem.
 fn init_logging(level: &str) {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -329,7 +339,10 @@ async fn authenticate_qr(bot: &TelegramBot, config: &TelegramConfig) -> Result<(
     let mut last_token: Option<Vec<u8>> = None;
 
     loop {
-        match bot.export_login_token(config.api_id, &config.api_hash).await? {
+        match bot
+            .export_login_token(config.api_id, &config.api_hash)
+            .await?
+        {
             QrAuthResult::Token { token, expires } => {
                 // Always clear and redraw when token changes
                 if last_token.as_ref() != Some(&token) {
@@ -362,7 +375,9 @@ async fn authenticate_qr(bot: &TelegramBot, config: &TelegramConfig) -> Result<(
             QrAuthResult::PasswordRequired => {
                 // 2FA is enabled - user needs to confirm on their phone
                 // After scanning QR, Telegram will ask for 2FA password on the phone
-                println!("\n2FA is enabled. Please confirm login on your phone and enter 2FA password there.");
+                println!(
+                    "\n2FA is enabled. Please confirm login on your phone and enter 2FA password there."
+                );
                 println!("Waiting for confirmation...\n");
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 // Continue polling - success will come after phone confirmation
@@ -377,15 +392,19 @@ async fn authenticate_qr(bot: &TelegramBot, config: &TelegramConfig) -> Result<(
 
 /// Clears the terminal screen using crossterm for WSL compatibility.
 fn clear_screen() {
-    use crossterm::{execute, terminal::{Clear, ClearType}, cursor::MoveTo};
+    use crossterm::{
+        cursor::MoveTo,
+        execute,
+        terminal::{Clear, ClearType},
+    };
 
     let mut stdout = std::io::stdout();
     // Clear entire screen and scrollback buffer, move cursor to top-left
     let _ = execute!(
         stdout,
-        Clear(ClearType::Purge),  // Clear screen and scrollback
-        Clear(ClearType::All),    // Clear visible area
-        MoveTo(0, 0)              // Move cursor to top-left
+        Clear(ClearType::Purge), // Clear screen and scrollback
+        Clear(ClearType::All),   // Clear visible area
+        MoveTo(0, 0)             // Move cursor to top-left
     );
     let _ = stdout.flush();
 }
